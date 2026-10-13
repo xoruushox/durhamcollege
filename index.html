@@ -1,0 +1,602 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta name="theme-color" content="#2563eb">
+    <title>Student Placement Mapper</title>
+    <link rel="stylesheet" href="styles.css">
+    <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+    <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+    
+    <!-- Firebase SDK -->
+    <script src="https://www.gstatic.com/firebasejs/10.7.1/firebase-app-compat.js"></script>
+    <script src="https://www.gstatic.com/firebasejs/10.7.1/firebase-firestore-compat.js"></script>
+</head>
+<body>
+    <div class="header">
+        <h1>Student Placement Mapper</h1>
+        <div class="user-info">
+            <span id="userDisplay"></span>
+            <button class="logout-btn" onclick="logout()">Logout</button>
+        </div>
+        <div class="controls">
+            <div class="control-group">
+                <select id="studentSelect">
+                    <option value="">Select Student...</option>
+                </select>
+                <button onclick="searchStudent()">Search</button>
+            </div>
+            <div class="control-group">
+                <select id="employerSelect">
+                    <option value="">Select Employer...</option>
+                </select>
+                <button onclick="searchEmployer()">Search</button>
+            </div>
+            <button class="add-btn" onclick="showAddStudent()">+ Add Student</button>
+            <button class="add-btn" onclick="showAddEmployer()">+ Add Employer</button>
+            <button class="export-btn" onclick="exportData()">💾 Export Backup</button>
+        </div>
+    </div>
+    
+    <div id="map"></div>
+    
+    <div id="resultsPanel" class="results-panel">
+        <button class="close-btn" onclick="closeResults()">✕</button>
+        <h3 id="resultsTitle">Matches</h3>
+        <div id="resultsList"></div>
+    </div>
+
+    <!-- Add Student Modal -->
+    <div id="studentModal" class="modal">
+        <div class="modal-content">
+            <h2>Add Student</h2>
+            <div class="form-group">
+                <label>Student Name</label>
+                <input type="text" id="newStudentName" placeholder="e.g., John Smith">
+            </div>
+            <div class="form-group">
+                <label>Postcode</label>
+                <input type="text" id="newStudentPostcode" placeholder="e.g., NE1 7RU">
+            </div>
+            <div class="form-group">
+                <label>Course</label>
+                <input type="text" id="newStudentCourse" placeholder="e.g., Engineering">
+            </div>
+            <div class="form-group">
+                <label>Notes (Optional)</label>
+                <textarea id="newStudentNotes" placeholder="e.g., Interested in automotive sector" rows="3" style="width: 100%; padding: 0.6rem; border: 1px solid #ddd; border-radius: 4px; font-family: inherit; resize: vertical;"></textarea>
+            </div>
+            <div class="modal-buttons">
+                <button class="cancel-btn" onclick="closeModal('studentModal')">Cancel</button>
+                <button class="add-btn" onclick="addStudent()">Add Student</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- Add Employer Modal -->
+    <div id="employerModal" class="modal">
+        <div class="modal-content">
+            <h2>Add Employer</h2>
+            <div class="form-group">
+                <label>Company Name</label>
+                <input type="text" id="newEmployerName" placeholder="e.g., Tech Solutions Ltd">
+            </div>
+            <div class="form-group">
+                <label>Postcode</label>
+                <input type="text" id="newEmployerPostcode" placeholder="e.g., SR1 3SD">
+            </div>
+            <div class="form-group">
+                <label>Industry</label>
+                <input type="text" id="newEmployerIndustry" placeholder="e.g., Technology">
+            </div>
+            <div class="form-group">
+                <label>Notes (Optional)</label>
+                <textarea id="newEmployerNotes" placeholder="e.g., Looking for 5 interns this year" rows="3" style="width: 100%; padding: 0.6rem; border: 1px solid #ddd; border-radius: 4px; font-family: inherit; resize: vertical;"></textarea>
+            </div>
+            <div class="modal-buttons">
+                <button class="cancel-btn" onclick="closeModal('employerModal')">Cancel</button>
+                <button class="add-btn" onclick="addEmployer()">Add Employer</button>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        // ============================================
+        // FIREBASE CONFIG
+        // ============================================
+        const firebaseConfig = {
+            apiKey: "AIzaSyDtv_iNKP75Bqubcr3zZVlliHtg3x7JWVE",
+            authDomain: "ncdmediamap.firebaseapp.com",
+            projectId: "ncdmediamap",
+            storageBucket: "ncdmediamap.firebasestorage.app",
+            messagingSenderId: "499709963037",
+            appId: "1:499709963037:web:8acbde716c447d5e600ff4",
+            measurementId: "G-SSD1SRQJ0Z"
+        };
+
+        // Initialize Firebase
+        let db;
+        try {
+            firebase.initializeApp(firebaseConfig);
+            db = firebase.firestore();
+            console.log('Firebase initialized successfully');
+        } catch (error) {
+            console.error('Firebase initialization error:', error);
+        }
+
+        // ============================================
+        // SESSION CHECK
+        // ============================================
+        function checkSession() {
+            const session = localStorage.getItem('placementMapperSession');
+            if (!session) {
+                window.location.href = 'login.html';
+                return false;
+            }
+            
+            const sessionData = JSON.parse(session);
+            const now = new Date().getTime();
+            
+            if (sessionData.expiry < now) {
+                localStorage.removeItem('placementMapperSession');
+                window.location.href = 'login.html';
+                return false;
+            }
+            
+            document.getElementById('userDisplay').textContent = `Logged in as: ${sessionData.username}`;
+            return true;
+        }
+
+        function logout() {
+            localStorage.removeItem('placementMapperSession');
+            window.location.href = 'login.html';
+        }
+
+        // ============================================
+        // GLOBAL VARIABLES
+        // ============================================
+        let students = [];
+        let employers = [];
+        let map, studentMarkers = [], employerMarkers = [], currentPin = null;
+
+        // ============================================
+        // FIREBASE DATABASE FUNCTIONS
+        // ============================================
+        
+        async function loadStudentsFromFirebase() {
+            try {
+                const snapshot = await db.collection('students').get();
+                students = [];
+                snapshot.forEach(doc => {
+                    students.push({
+                        id: doc.id,
+                        ...doc.data()
+                    });
+                });
+                console.log(`Loaded ${students.length} students from Firebase`);
+            } catch (error) {
+                console.error('Error loading students:', error);
+            }
+        }
+
+        async function loadEmployersFromFirebase() {
+            try {
+                const snapshot = await db.collection('employers').get();
+                employers = [];
+                snapshot.forEach(doc => {
+                    employers.push({
+                        id: doc.id,
+                        ...doc.data()
+                    });
+                });
+                console.log(`Loaded ${employers.length} employers from Firebase`);
+            } catch (error) {
+                console.error('Error loading employers:', error);
+            }
+        }
+
+        async function saveStudentToFirebase(student) {
+            try {
+                const studentData = {
+                    name: student.name,
+                    postcode: student.postcode,
+                    course: student.course,
+                    lat: student.lat,
+                    lng: student.lng,
+                    createdAt: firebase.firestore.FieldValue.serverTimestamp()
+                };
+                
+                if (student.notes && student.notes.trim()) {
+                    studentData.notes = student.notes;
+                }
+                
+                const docRef = await db.collection('students').add(studentData);
+                return docRef.id;
+            } catch (error) {
+                console.error('Error saving student:', error);
+                throw error;
+            }
+        }
+
+        async function saveEmployerToFirebase(employer) {
+            try {
+                const employerData = {
+                    name: employer.name,
+                    postcode: employer.postcode,
+                    industry: employer.industry,
+                    lat: employer.lat,
+                    lng: employer.lng,
+                    createdAt: firebase.firestore.FieldValue.serverTimestamp()
+                };
+                
+                if (employer.notes && employer.notes.trim()) {
+                    employerData.notes = employer.notes;
+                }
+                
+                const docRef = await db.collection('employers').add(employerData);
+                return docRef.id;
+            } catch (error) {
+                console.error('Error saving employer:', error);
+                throw error;
+            }
+        }
+
+        // ============================================
+        // MAP FUNCTIONS
+        // ============================================
+        
+        async function initMap() {
+            if (!checkSession()) return;
+            
+            map = L.map('map').setView([54.8, -1.5], 9);
+            L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+                attribution: '© OpenStreetMap contributors'
+            }).addTo(map);
+
+            await loadStudentsFromFirebase();
+            await loadEmployersFromFirebase();
+            
+            if (students.length > 0 || employers.length > 0) {
+                addAllMarkers();
+                populateDropdowns();
+            }
+        }
+
+        function addAllMarkers() {
+            studentMarkers.forEach(m => map.removeLayer(m));
+            employerMarkers.forEach(m => map.removeLayer(m));
+            studentMarkers = [];
+            employerMarkers = [];
+
+            students.forEach(student => {
+                const marker = L.circleMarker([student.lat, student.lng], {
+                    radius: 8,
+                    fillColor: "#3b82f6",
+                    color: "#1e40af",
+                    weight: 2,
+                    opacity: 1,
+                    fillOpacity: 0.7
+                }).addTo(map);
+                
+                let popupContent = `<b>${student.name}</b><br>${student.course}<br>${student.postcode}`;
+                if (student.notes) {
+                    popupContent += `<br><em style="color: #6b7280; font-size: 0.9em;">${student.notes}</em>`;
+                }
+                
+                marker.bindPopup(popupContent);
+                marker.data = student;
+                marker.type = 'student';
+                studentMarkers.push(marker);
+            });
+
+            employers.forEach(employer => {
+                const marker = L.circleMarker([employer.lat, employer.lng], {
+                    radius: 10,
+                    fillColor: "#059669",
+                    color: "#047857",
+                    weight: 2,
+                    opacity: 1,
+                    fillOpacity: 0.7
+                }).addTo(map);
+                
+                let popupContent = `<b>${employer.name}</b><br>${employer.industry}<br>${employer.postcode}`;
+                if (employer.notes) {
+                    popupContent += `<br><em style="color: #6b7280; font-size: 0.9em;">${employer.notes}</em>`;
+                }
+                
+                marker.bindPopup(popupContent);
+                marker.data = employer;
+                marker.type = 'employer';
+                employerMarkers.push(marker);
+            });
+        }
+
+        function populateDropdowns() {
+            const studentSelect = document.getElementById('studentSelect');
+            const employerSelect = document.getElementById('employerSelect');
+            
+            studentSelect.innerHTML = '<option value="">Select Student...</option>';
+            students.forEach(s => {
+                studentSelect.innerHTML += `<option value="${s.id}">${s.name} (${s.postcode})</option>`;
+            });
+
+            employerSelect.innerHTML = '<option value="">Select Employer...</option>';
+            employers.forEach(e => {
+                employerSelect.innerHTML += `<option value="${e.id}">${e.name} (${e.postcode})</option>`;
+            });
+        }
+
+        // ============================================
+        // GEOCODING
+        // ============================================
+        
+        async function geocodePostcode(postcode) {
+            try {
+                const cleanPostcode = postcode.replace(/\s+/g, '').toUpperCase();
+                const response = await fetch(`https://api.postcodes.io/postcodes/${cleanPostcode}`);
+                
+                if (response.ok) {
+                    const data = await response.json();
+                    if (data.result) {
+                        return {
+                            lat: data.result.latitude,
+                            lng: data.result.longitude,
+                            success: true
+                        };
+                    }
+                }
+            } catch (error) {
+                console.error(`Failed to geocode ${postcode}:`, error);
+            }
+            
+            return {
+                lat: 54.8 + (Math.random() - 0.5) * 0.6,
+                lng: -1.5 + (Math.random() - 0.5) * 0.8,
+                success: false
+            };
+        }
+
+        // ============================================
+        // SEARCH FUNCTIONS
+        // ============================================
+        
+        function calculateDistance(lat1, lng1, lat2, lng2) {
+            const R = 3959;
+            const dLat = (lat2 - lat1) * Math.PI / 180;
+            const dLng = (lng2 - lng1) * Math.PI / 180;
+            const a = Math.sin(dLat/2) * Math.sin(dLat/2) +
+                      Math.cos(lat1 * Math.PI / 180) * Math.cos(lat2 * Math.PI / 180) *
+                      Math.sin(dLng/2) * Math.sin(dLng/2);
+            const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1-a));
+            return R * c;
+        }
+
+        function searchStudent() {
+            const studentId = document.getElementById('studentSelect').value;
+            if (!studentId) return;
+
+            const student = students.find(s => s.id === studentId);
+            if (!student) return;
+
+            if (currentPin) map.removeLayer(currentPin);
+
+            currentPin = L.marker([student.lat, student.lng], {
+                icon: L.icon({
+                    iconUrl: 'https://raw.githubusercontent.com/pointhi/leaflet-color-markers/master/img/marker-icon-2x-red.png',
+                    shadowUrl: 'https://cdnjs.cloudflare.com/ajax/libs/leaflet/0.7.7/images/marker-shadow.png',
+                    iconSize: [25, 41],
+                    iconAnchor: [12, 41],
+                    popupAnchor: [1, -34],
+                    shadowSize: [41, 41]
+                })
+            }).addTo(map);
+            currentPin.bindPopup(`<b>Selected: ${student.name}</b><br>${student.course}`).openPopup();
+            
+            map.setView([student.lat, student.lng], 11);
+
+            const matches = employers.map(employer => ({
+                ...employer,
+                distance: calculateDistance(student.lat, student.lng, employer.lat, employer.lng)
+            })).sort((a, b) => a.distance - b.distance);
+
+            displayResults(`Employers near ${student.name}`, matches, 'employer');
+        }
+
+        function searchEmployer() {
+            const employerId = document.getElementById('employerSelect').value;
+            if (!employerId) return;
+
+            const employer = employers.find(e => e.id === employerId);
+            if (!employer) return;
+
+            if (currentPin) map.removeLayer(currentPin);
+
+            currentPin = L.marker([employer.lat, employer.lng], {
+                icon: L.icon({
+                    iconUrl: 'https://raw.githubusercontent.com/pointhi/leaflet-color-markers/master/img/marker-icon-2x-red.png',
+                    shadowUrl: 'https://cdnjs.cloudflare.com/ajax/libs/leaflet/0.7.7/images/marker-shadow.png',
+                    iconSize: [25, 41],
+                    iconAnchor: [12, 41],
+                    popupAnchor: [1, -34],
+                    shadowSize: [41, 41]
+                })
+            }).addTo(map);
+            currentPin.bindPopup(`<b>Selected: ${employer.name}</b><br>${employer.industry}`).openPopup();
+            
+            map.setView([employer.lat, employer.lng], 11);
+
+            const matches = students.map(student => ({
+                ...student,
+                distance: calculateDistance(employer.lat, employer.lng, student.lat, student.lng)
+            })).sort((a, b) => a.distance - b.distance);
+
+            displayResults(`Students near ${employer.name}`, matches, 'student');
+        }
+
+        function displayResults(title, matches, type) {
+            const panel = document.getElementById('resultsPanel');
+            const titleEl = document.getElementById('resultsTitle');
+            const listEl = document.getElementById('resultsList');
+
+            titleEl.textContent = title;
+            listEl.innerHTML = '';
+
+            matches.slice(0, 10).forEach(match => {
+                const div = document.createElement('div');
+                div.className = 'match-item';
+                
+                let content = `
+                    <div class="match-type">${type === 'employer' ? match.industry : match.course}</div>
+                    <div class="match-name">${match.name}</div>
+                    <div class="match-distance">${match.distance.toFixed(1)} miles away</div>
+                `;
+                
+                if (match.notes) {
+                    content += `<div style="font-size: 0.85rem; color: #6b7280; margin-top: 0.25rem; font-style: italic;">${match.notes}</div>`;
+                }
+                
+                div.innerHTML = content;
+                div.onclick = () => {
+                    map.setView([match.lat, match.lng], 13);
+                    const marker = type === 'employer' ? 
+                        employerMarkers.find(m => m.data.id === match.id) :
+                        studentMarkers.find(m => m.data.id === match.id);
+                    if (marker) marker.openPopup();
+                };
+                listEl.appendChild(div);
+            });
+
+            panel.classList.add('active');
+        }
+
+        function closeResults() {
+            document.getElementById('resultsPanel').classList.remove('active');
+        }
+
+        // ============================================
+        // ADD FUNCTIONS
+        // ============================================
+        
+        function showAddStudent() {
+            document.getElementById('studentModal').classList.add('active');
+        }
+
+        function showAddEmployer() {
+            document.getElementById('employerModal').classList.add('active');
+        }
+
+        function closeModal(modalId) {
+            document.getElementById(modalId).classList.remove('active');
+        }
+
+        async function addStudent() {
+            const name = document.getElementById('newStudentName').value;
+            const postcode = document.getElementById('newStudentPostcode').value;
+            const course = document.getElementById('newStudentCourse').value;
+            const notes = document.getElementById('newStudentNotes').value;
+
+            if (!name || !postcode || !course) {
+                alert('Please fill in all required fields');
+                return;
+            }
+
+            const coords = await geocodePostcode(postcode);
+            const newStudent = {
+                name,
+                postcode: postcode.toUpperCase(),
+                course,
+                notes: notes.trim(),
+                lat: coords.lat,
+                lng: coords.lng
+            };
+
+            try {
+                const docId = await saveStudentToFirebase(newStudent);
+                newStudent.id = docId;
+                students.push(newStudent);
+                
+                addAllMarkers();
+                populateDropdowns();
+                closeModal('studentModal');
+                
+                document.getElementById('newStudentName').value = '';
+                document.getElementById('newStudentPostcode').value = '';
+                document.getElementById('newStudentCourse').value = '';
+                document.getElementById('newStudentNotes').value = '';
+
+                alert(`Student ${name} added successfully!`);
+            } catch (error) {
+                alert('Error adding student. Please try again.');
+            }
+        }
+
+        async function addEmployer() {
+            const name = document.getElementById('newEmployerName').value;
+            const postcode = document.getElementById('newEmployerPostcode').value;
+            const industry = document.getElementById('newEmployerIndustry').value;
+            const notes = document.getElementById('newEmployerNotes').value;
+
+            if (!name || !postcode || !industry) {
+                alert('Please fill in all required fields');
+                return;
+            }
+
+            const coords = await geocodePostcode(postcode);
+            const newEmployer = {
+                name,
+                postcode: postcode.toUpperCase(),
+                industry,
+                notes: notes.trim(),
+                lat: coords.lat,
+                lng: coords.lng
+            };
+
+            try {
+                const docId = await saveEmployerToFirebase(newEmployer);
+                newEmployer.id = docId;
+                employers.push(newEmployer);
+                
+                addAllMarkers();
+                populateDropdowns();
+                closeModal('employerModal');
+                
+                document.getElementById('newEmployerName').value = '';
+                document.getElementById('newEmployerPostcode').value = '';
+                document.getElementById('newEmployerIndustry').value = '';
+                document.getElementById('newEmployerNotes').value = '';
+
+                alert(`Employer ${name} added successfully!`);
+            } catch (error) {
+                alert('Error adding employer. Please try again.');
+            }
+        }
+
+        // ============================================
+        // EXPORT FUNCTION
+        // ============================================
+        
+        function exportData() {
+            const data = {
+                students: students,
+                employers: employers,
+                exportDate: new Date().toISOString()
+            };
+
+            const blob = new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' });
+            const url = URL.createObjectURL(blob);
+            const a = document.createElement('a');
+            a.href = url;
+            a.download = `placement-data-backup-${new Date().toISOString().split('T')[0]}.json`;
+            a.click();
+            URL.revokeObjectURL(url);
+        }
+
+        // ============================================
+        // INITIALIZE
+        // ============================================
+        
+        window.onload = initMap;
+    </script>
+</body>
+</html>
